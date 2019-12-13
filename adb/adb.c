@@ -8,24 +8,22 @@
 
 
 struct {
-  uint32_t count;
-  uint32_t bits[64];
-  uint32_t stop_bit;
+  uint16_t count;
+  uint16_t bits[64];
+  uint16_t stop_bit;
 } adb_send_data =
   {
-   8, { 35, 35, 35, 35, 35, 35, 35, 35,
-      65, 65, 65, 65, 65, 65, 65, 65,
-      35, 35, 35, 35, 35, 35, 35, 35,
-      65, 65, 65, 65, 65, 65, 65, 65,
-      35, 35, 35, 35, 35, 35, 35, 35,
-      65, 65, 65, 65, 65, 65, 65, 65,
-      35, 35, 35, 35, 35, 35, 35, 35,
-       65, 65, 65, 65, 65, 65, 65, 65 }, 35 
+   8, { 64, 64, 64, 64, 6400, 6400, 6400, 6400,
+	64, 64, 64, 64, 6400, 6400, 6400, 6400,
+	64, 64, 64, 64, 6400, 6400, 6400, 6400,
+	64, 64, 64, 64, 6400, 6400, 6400, 6400,
+	64, 64, 64, 64, 6400, 6400, 6400, 6400,
+	64, 64, 64, 64, 6400, 6400, 6400, 6400,
+	64, 64, 64, 64, 6400, 6400, 6400, 6400,
+	64, 64, 64, 64, 6400, 6400, 6400, 6400 }, 64
   };
 
 typedef void(*irq_t)(void);
-
-//irq_t dma1_channel3_isr;
 
 void init_adb(void);
 void adb_prepare_output(void);
@@ -60,36 +58,72 @@ void tim3_isr(void) {
   }
 }
 
+void dma1_channel3_isr(void) {
+  if (dma_get_interrupt_flag(DMA1, DMA_CHANNEL3, DMA_TCIF)) {
+    dma_clear_interrupt_flags(DMA1, DMA_CHANNEL3, DMA_TCIF);
+  }
+}
+
 int main(void) {
+
   rcc_clock_setup_in_hse_8mhz_out_72mhz();
 
   rcc_periph_clock_enable(RCC_TIM3);
   rcc_periph_clock_enable(RCC_GPIOB);
+  rcc_periph_clock_enable(RCC_DMA1);
 
   gpio_set_mode(GPIOB, GPIO_MODE_OUTPUT_50_MHZ, GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, GPIO1);
 
-  //  nvic_enable_irq(NVIC_TIM3_IRQ);
-
   timer_disable_counter(TIM3);
+  dma_disable_channel(DMA1, DMA_CHANNEL3);
   
+  // reset the timer
   rcc_periph_reset_pulse(RST_TIM3);
-  
+
+  // Set up the timer baseline clock, direction etc
   timer_set_prescaler(TIM3, ((rcc_apb1_frequency * 2) / 5000)); // 5khz?
   timer_set_clock_division(TIM3, 1);
   timer_continuous_mode(TIM3);
   timer_direction_down(TIM3);
   timer_enable_preload(TIM3);
 
-  timer_set_period(TIM3, 5000);                                 // 1hz
+  // Set up for 1Hz period, direct output compare
+  timer_set_period(TIM3, 6464);                                 // 6464 5kHz ticks now.
   timer_set_oc_mode(TIM3, TIM_OC4, TIM_OCM_PWM1);
   timer_set_oc_fast_mode(TIM3, TIM_OC4);
   timer_enable_oc_preload(TIM3, TIM_OC4);
-  timer_set_oc_polarity_low(TIM3, TIM_OC4);
+  timer_set_oc_polarity_high(TIM3, TIM_OC4);
   timer_enable_oc_output(TIM3, TIM_OC4);
-  timer_set_oc_value(TIM3, TIM_OC4, 4000);
+  timer_set_oc_value(TIM3, TIM_OC4, 3232);
+
+  // Set up dma
+  dma_channel_reset(DMA1, DMA_CHANNEL3);
+  dma_set_priority(DMA1, DMA_CHANNEL3, DMA_CCR_PL_HIGH);
+  dma_set_memory_size(DMA1, DMA_CHANNEL3, DMA_CCR_MSIZE_16BIT);
+  dma_set_peripheral_size(DMA1, DMA_CHANNEL3, DMA_CCR_PSIZE_16BIT);
+  
+  dma_enable_memory_increment_mode(DMA1, DMA_CHANNEL3);
+  dma_disable_peripheral_increment_mode(DMA1, DMA_CHANNEL3);
+  //dma_enable_circular_mode(DMA1, DMA_CHANNEL3);
+  
+  dma_set_read_from_memory(DMA1, DMA_CHANNEL3);
+  
+  dma_set_peripheral_address(DMA1, DMA_CHANNEL3, (uint32_t)&TIM3_CCR4); // direct mode
+  //dma_set_peripheral_address(DMA1, DMA_CHANNEL3, (uint32_t)&TIM3_DMAR); // burst mode
+  dma_set_memory_address(DMA1, DMA_CHANNEL3, (uint32_t)&(adb_send_data.bits[0]));
+  dma_set_number_of_data(DMA1, DMA_CHANNEL3, 65);
+  
+  //nvic_enable_irq(NVIC_DMA1_CHANNEL3_IRQ);
+  //dma_enable_transfer_complete_interrupt(DMA1, DMA_CHANNEL3);
+
+  // enable dma on the timer side.
+  timer_enable_irq(TIM3, TIM_DIER_CC4DE);
+  //TIM_DCR(TIM3) = (1 << 8) | 17; // 1 transfer per burst, to CCR4
   
   //  timer_enable_irq(TIM3, TIM_DIER_UIE);
   //  timer_enable_irq(TIM3, TIM_DIER_CC4IE);
+  
+  dma_enable_channel(DMA1, DMA_CHANNEL3);
   timer_enable_counter(TIM3);
   
   while (1) {
