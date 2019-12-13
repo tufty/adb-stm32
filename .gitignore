@@ -1,4 +1,9 @@
+*~
+#*#
 bin/
 *.elf
 *.bin
+*.d
+*.o
+*.map
 generated.*.ld
