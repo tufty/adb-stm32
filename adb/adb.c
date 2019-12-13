@@ -66,9 +66,9 @@ int main(void) {
   rcc_periph_clock_enable(RCC_TIM3);
   rcc_periph_clock_enable(RCC_GPIOB);
 
-  gpio_set_mode(GPIOB, GPIO_MODE_OUTPUT_50_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO1);
+  gpio_set_mode(GPIOB, GPIO_MODE_OUTPUT_50_MHZ, GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, GPIO1);
 
-  nvic_enable_irq(NVIC_TIM3_IRQ);
+  //  nvic_enable_irq(NVIC_TIM3_IRQ);
 
   timer_disable_counter(TIM3);
   
@@ -81,10 +81,15 @@ int main(void) {
   timer_enable_preload(TIM3);
 
   timer_set_period(TIM3, 5000);                                 // 1hz
+  timer_set_oc_mode(TIM3, TIM_OC4, TIM_OCM_PWM1);
+  timer_set_oc_fast_mode(TIM3, TIM_OC4);
+  timer_enable_oc_preload(TIM3, TIM_OC4);
+  timer_set_oc_polarity_low(TIM3, TIM_OC4);
+  timer_enable_oc_output(TIM3, TIM_OC4);
   timer_set_oc_value(TIM3, TIM_OC4, 4000);
   
-  timer_enable_irq(TIM3, TIM_DIER_UIE);
-  timer_enable_irq(TIM3, TIM_DIER_CC4IE);
+  //  timer_enable_irq(TIM3, TIM_DIER_UIE);
+  //  timer_enable_irq(TIM3, TIM_DIER_CC4IE);
   timer_enable_counter(TIM3);
   
   while (1) {
