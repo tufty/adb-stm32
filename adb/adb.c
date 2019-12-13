@@ -69,14 +69,20 @@ int main(void) {
   gpio_set_mode(GPIOB, GPIO_MODE_OUTPUT_50_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO1);
 
   nvic_enable_irq(NVIC_TIM3_IRQ);
-  rcc_periph_reset_pulse(RST_TIM3);
 
+  timer_disable_counter(TIM3);
+  
+  rcc_periph_reset_pulse(RST_TIM3);
+  
   timer_set_prescaler(TIM3, ((rcc_apb1_frequency * 2) / 5000)); // 5khz?
+  timer_set_clock_division(TIM3, 1);
+  timer_continuous_mode(TIM3);
+  timer_direction_down(TIM3);
+  timer_enable_preload(TIM3);
+
   timer_set_period(TIM3, 5000);                                 // 1hz
   timer_set_oc_value(TIM3, TIM_OC4, 4000);
   
-  timer_disable_preload(TIM3);
-  timer_continuous_mode(TIM3);
   timer_enable_irq(TIM3, TIM_DIER_UIE);
   timer_enable_irq(TIM3, TIM_DIER_CC4IE);
   timer_enable_counter(TIM3);
