@@ -52,7 +52,11 @@ void tim3_isr(void) {
   if (timer_get_flag(TIM3, TIM_SR_UIF)) {
     timer_clear_flag(TIM3, TIM_SR_UIF);
     
-    gpio_toggle(GPIOB, GPIO1);	/* LED on/off */
+    gpio_clear(GPIOB, GPIO1);
+  }
+  if (timer_get_flag(TIM3, TIM_SR_CC4IF)) {
+    timer_clear_flag(TIM3, TIM_SR_CC4IF);
+    gpio_set(GPIOB, GPIO1);
   }
 }
 
@@ -69,10 +73,12 @@ int main(void) {
 
   timer_set_prescaler(TIM3, ((rcc_apb1_frequency * 2) / 5000)); // 5khz?
   timer_set_period(TIM3, 5000);                                 // 1hz
-
+  timer_set_oc_value(TIM3, TIM_OC4, 4000);
+  
   timer_disable_preload(TIM3);
   timer_continuous_mode(TIM3);
   timer_enable_irq(TIM3, TIM_DIER_UIE);
+  timer_enable_irq(TIM3, TIM_DIER_CC4IE);
   timer_enable_counter(TIM3);
   
   while (1) {
