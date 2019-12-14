@@ -5,134 +5,14 @@
 #include <libopencm3/stm32/dma.h>
 #include <libopencm3/cm3/systick.h>
 #include <libopencm3/cm3/nvic.h>
+#include <libopencm3/cm3/sync.h>
 
+#include "adb.h"
 
-struct {
-  uint16_t count;
-  uint16_t bits[64];
-  uint16_t stop_bit;
-} adb_send_data =
-  {
-   8, { 64, 64, 64, 64, 6400, 6400, 6400, 6400,
-	64, 64, 64, 64, 6400, 6400, 6400, 6400,
-	64, 64, 64, 64, 6400, 6400, 6400, 6400,
-	64, 64, 64, 64, 6400, 6400, 6400, 6400,
-	64, 64, 64, 64, 6400, 6400, 6400, 6400,
-	64, 64, 64, 64, 6400, 6400, 6400, 6400,
-	64, 64, 64, 64, 6400, 6400, 6400, 6400,
-	64, 64, 64, 64, 6400, 6400, 6400, 6400 }, 64
-  };
+void adb_bit_send_done (void);
 
-typedef void(*irq_t)(void);
-
-void init_adb(void);
-void adb_prepare_output(void);
-void adb_prepare_input(void);
-void adb_send_bytes(irq_t cb);
-void attn_sync(void);
-
-void data_done(void);
-
-
-void data_done (void) {
-  for (uint32_t i = 0; i < 8000000; i++)	/* Wait a bit. */
-    __asm__("nop");
-
-  while(1) {
-    gpio_toggle(GPIOB, GPIO1);	/* LED on/off */
-
-    for (uint32_t i = 0; i < 800000; i++)	/* Wait a bit. */
-      __asm__("nop");
-  }
-}
-
-void tim3_isr(void) {
-  if (timer_get_flag(TIM3, TIM_SR_UIF)) {
-    timer_clear_flag(TIM3, TIM_SR_UIF);
-    
-    gpio_clear(GPIOB, GPIO1);
-  }
-  if (timer_get_flag(TIM3, TIM_SR_CC4IF)) {
-    timer_clear_flag(TIM3, TIM_SR_CC4IF);
-    gpio_set(GPIOB, GPIO1);
-  }
-}
-
-void dma1_channel3_isr(void) {
-  if (dma_get_interrupt_flag(DMA1, DMA_CHANNEL3, DMA_TCIF)) {
-    dma_clear_interrupt_flags(DMA1, DMA_CHANNEL3, DMA_TCIF);
-  }
-}
-
-int main(void) {
-
-  rcc_clock_setup_in_hse_8mhz_out_72mhz();
-
-  rcc_periph_clock_enable(RCC_TIM3);
-  rcc_periph_clock_enable(RCC_GPIOB);
-  rcc_periph_clock_enable(RCC_DMA1);
-
-  gpio_set_mode(GPIOB, GPIO_MODE_OUTPUT_50_MHZ, GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, GPIO1);
-
-  timer_disable_counter(TIM3);
-  dma_disable_channel(DMA1, DMA_CHANNEL3);
-  
-  // reset the timer
-  rcc_periph_reset_pulse(RST_TIM3);
-
-  // Set up the timer baseline clock, direction etc
-  timer_set_prescaler(TIM3, ((rcc_apb1_frequency * 2) / 5000)); // 5khz?
-  timer_set_clock_division(TIM3, 1);
-  timer_continuous_mode(TIM3);
-  timer_direction_down(TIM3);
-  timer_enable_preload(TIM3);
-
-  // Set up for 1Hz period, direct output compare
-  timer_set_period(TIM3, 6464);                                 // 6464 5kHz ticks now.
-  timer_set_oc_mode(TIM3, TIM_OC4, TIM_OCM_PWM1);
-  timer_set_oc_fast_mode(TIM3, TIM_OC4);
-  timer_enable_oc_preload(TIM3, TIM_OC4);
-  timer_set_oc_polarity_high(TIM3, TIM_OC4);
-  timer_enable_oc_output(TIM3, TIM_OC4);
-  timer_set_oc_value(TIM3, TIM_OC4, 3232);
-
-  // Set up dma
-  dma_channel_reset(DMA1, DMA_CHANNEL3);
-  dma_set_priority(DMA1, DMA_CHANNEL3, DMA_CCR_PL_HIGH);
-  dma_set_memory_size(DMA1, DMA_CHANNEL3, DMA_CCR_MSIZE_16BIT);
-  dma_set_peripheral_size(DMA1, DMA_CHANNEL3, DMA_CCR_PSIZE_16BIT);
-  
-  dma_enable_memory_increment_mode(DMA1, DMA_CHANNEL3);
-  dma_disable_peripheral_increment_mode(DMA1, DMA_CHANNEL3);
-  //dma_enable_circular_mode(DMA1, DMA_CHANNEL3);
-  
-  dma_set_read_from_memory(DMA1, DMA_CHANNEL3);
-  
-  dma_set_peripheral_address(DMA1, DMA_CHANNEL3, (uint32_t)&TIM3_CCR4); // direct mode
-  //dma_set_peripheral_address(DMA1, DMA_CHANNEL3, (uint32_t)&TIM3_DMAR); // burst mode
-  dma_set_memory_address(DMA1, DMA_CHANNEL3, (uint32_t)&(adb_send_data.bits[0]));
-  dma_set_number_of_data(DMA1, DMA_CHANNEL3, 65);
-  
-  //nvic_enable_irq(NVIC_DMA1_CHANNEL3_IRQ);
-  //dma_enable_transfer_complete_interrupt(DMA1, DMA_CHANNEL3);
-
-  // enable dma on the timer side.
-  timer_enable_irq(TIM3, TIM_DIER_CC4DE);
-  //TIM_DCR(TIM3) = (1 << 8) | 17; // 1 transfer per burst, to CCR4
-  
-  //  timer_enable_irq(TIM3, TIM_DIER_UIE);
-  //  timer_enable_irq(TIM3, TIM_DIER_CC4IE);
-  
-  dma_enable_channel(DMA1, DMA_CHANNEL3);
-  timer_enable_counter(TIM3);
-  
-  while (1) {
-    for (uint32_t i = 0; i < 800000; i++)	/* Wait a bit. */
-      __asm__("nop");
-  }
-  
-  return 0;
-}
+#define ADB_TALK (device, register)   (((device) & 0xf) << 4) | 0x0c | ((register) & 0x3)
+#define ADB_LISTEN (device, register) (((device) & 0xf) << 4) | 0x08 | ((register) & 0x3)
 
 // Timer setup for dma-based output compare to generate ADB signalling.
 // Every command has the same prelude, viz:
@@ -159,59 +39,65 @@ int main(void) {
 // output compare mode.  Or maybe pwm mode.  Not sure about that.
 
 // We will be using timer 2 channel 1 for all this, remapped onto PA15, which
-// is 5v tolerant.  
+// is 5v tolerant.
 
-void init_adb() {
-  // Enable the clocks
-  rcc_periph_clock_enable(RCC_GPIOB);
-  rcc_periph_clock_enable(RCC_TIM3);
-  rcc_periph_clock_enable(RCC_DMA1);
+mutex_t _adb_mutex = MUTEX_UNLOCKED;
 
-  rcc_periph_reset_pulse(RST_TIM3);
+void dma1_channel5_isr (void) {
+  if (dma_get_interrupt_flag (_adb_dma, _adb_dma_channel, DMA_TCIF)) {
+    dma_clear_interrupt_flags (_adb_dma, _adb_dma_channel, DMA_TCIF);
+  }
+  adb_bit_send_done ();
+}
+
+void adb_bit_send_done (void) {
+  timer_disable_counter (_adb_timer);
+  dma_disable_channel   (_adb_dma, _adb_dma_channel);
+  mutex_unlock          (&_adb_mutex);
+}
+
+// Send bits. 
+void adb_send_bits (uint8_t count, uint16_t * bit_timings) {
+  mutex_lock                (&_adb_mutex);
+
+  timer_disable_counter     (_adb_timer);
+  dma_disable_channel       (_adb_dma, _adb_dma_channel);
+
+  gpio_set_mode(_adb_gpio, GPIO_MODE_OUTPUT_50_MHZ, GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, _adb_pin);
+
+  timer_set_prescaler       (_adb_timer, _adb_timer_prescaler);
+  timer_set_clock_division  (_adb_timer, _adb_timer_clock_division);
+  timer_continuous_mode     (_adb_timer);
+  timer_direction_down      (_adb_timer);
+  timer_enable_preload      (_adb_timer);
+  timer_set_period          (_adb_timer, _adb_bit_length);
   
-  timer_set_prescaler(TIM3, 71);
-  timer_set_period(TIM3, 100);
-  timer_set_clock_division(TIM3, 1);
-  timer_enable_preload(TIM3);
-}
-
-void adb_prepare_output() {
-  // Initialise the pin
-  gpio_set_mode(GPIO_BANK_TIM3_CH4, GPIO_MODE_OUTPUT_50_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO_TIM3_CH4);
-}
-
-void adb_prepare_input() {
-  // Initialise the pin
-  gpio_set_mode(GPIO_BANK_TIM3_CH4, GPIO_MODE_INPUT, GPIO_CNF_INPUT_PULL_UPDOWN, GPIO_TIM3_CH4);
-}
-
-
-
-// This will send one start bit, /count/ sets of 8 bits, and a stop bit. 
-void adb_send_bytes(irq_t cb) {  
-  // Set up the timer for PWM, 100 µsec period, initial 1 start pulse
-  timer_disable_counter(TIM3);
-  dma_disable_channel(DMA1, DMA_CHANNEL3);
-
-  timer_continuous_mode(TIM3);
-  timer_direction_down(TIM3);
-  timer_set_period(TIM3, 100);
-  timer_enable_oc_preload(TIM3, TIM_OC4);
-  timer_set_counter(TIM3, 100);
-  timer_set_oc_value(TIM3, TIM_OC4, 65);  // We want 35 µsec pulse, but we count down from 100
-
-  dma_set_peripheral_address(DMA1, DMA_CHANNEL3, TIM3_CCR4);
-  dma_set_memory_address(DMA1, DMA_CHANNEL3, (uint32_t)(adb_send_data.bits));
-  dma_set_number_of_data(DMA1, DMA_CHANNEL3, (adb_send_data.count << 3) + 1);
-  dma_enable_transfer_complete_interrupt(DMA1, DMA_CHANNEL3);
-  //  dma1_channel3_isr = cb;
+  timer_set_oc_mode         (_adb_timer, _adb_oc_id, TIM_OCM_PWM1);
+  timer_set_oc_fast_mode    (_adb_timer, _adb_oc_id);
+  timer_enable_oc_preload   (_adb_timer, _adb_oc_id);
+  timer_set_oc_polarity_low (_adb_timer, _adb_oc_id);
+  timer_enable_oc_output    (_adb_timer, _adb_oc_id);
   
-  timer_set_dma_on_update_event(TIM3);
+  timer_set_oc_value        (_adb_timer, _adb_oc_id, _adb_1_bit_time);
+
+  dma_channel_reset         (_adb_dma, _adb_dma_channel);
+  dma_set_priority          (_adb_dma, _adb_dma_channel, DMA_CCR_PL_HIGH);
+  dma_set_memory_size       (_adb_dma, _adb_dma_channel, DMA_CCR_MSIZE_16BIT);
+  dma_set_peripheral_size   (_adb_dma, _adb_dma_channel, DMA_CCR_PSIZE_16BIT);
+
+  dma_enable_memory_increment_mode      (_adb_dma, _adb_dma_channel);
+  dma_disable_peripheral_increment_mode (_adb_dma, _adb_dma_channel);
+  dma_set_read_from_memory              (_adb_dma, _adb_dma_channel);
+  dma_set_peripheral_address            (_adb_dma, _adb_dma_channel, (uint32_t)_adb_ccr);
+  dma_set_memory_address                (_adb_dma, _adb_dma_channel, (uint32_t)bit_timings);
+  dma_set_number_of_data                (_adb_dma, _adb_dma_channel, count);
+
+  nvic_enable_irq                        (_adb_dma_irq);
+  dma_enable_transfer_complete_interrupt (_adb_dma, _adb_dma_channel);
+
+  timer_enable_irq                       (_adb_timer, _adb_timer_dma_enable);
   
-  dma_enable_channel(DMA1, DMA_CHANNEL3);
-  timer_enable_counter(TIM3);
-}
+  dma_enable_channel                     (_adb_dma, _adb_dma_channel);
+  timer_enable_counter                   (_adb_timer);
 
-void attn_sync() {
 }
-
