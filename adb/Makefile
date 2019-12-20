@@ -1,5 +1,7 @@
 BINARY = adb
 
+OBJS += main.o
+
 LDSCRIPT = ../stm32-maplemini.ld
 
 OPENCM3_DIR = ../libopencm3

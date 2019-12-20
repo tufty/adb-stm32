@@ -8,4 +8,6 @@ int main (void) {
   rcc_periph_clock_enable (_rcc_adb_gpio);
   rcc_periph_clock_enable (_rcc_adb_dma);
 
+
+  return 0;
 }
