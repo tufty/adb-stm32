@@ -1,6 +1,9 @@
-BINARY = adb
+BINARY = main
 
-OBJS += main.o
+CFLAGS += -I ../common
+
+OBJS += ../common/adb.o
+OBJS += ../common/cdcacm.o
 
 LDSCRIPT = ../stm32-maplemini.ld
 
