@@ -2,6 +2,7 @@ BINARY = main
 
 CFLAGS += -I ../common
 
+OBJS += ../common/util.o
 OBJS += ../common/adb.o
 OBJS += ../common/cdcacm.o
 

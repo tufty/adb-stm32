@@ -1,5 +1,7 @@
+#include <util.h>
 #include <adb.h>
 #include <cdcacm.h>
+#include <libopencm3/cm3/dwt.h>
 
 static const struct usb_device_descriptor dev = {
 	.bLength = USB_DT_DEVICE_SIZE,
@@ -137,7 +139,7 @@ static const struct usb_config_descriptor config = {
 
 static const char *usb_strings[] = {
 	"Black Sphere Technologies",
-	"CDC-ACM Demo",
+	"ADB Terminal",
 	"DEMO",
 };
 
@@ -153,7 +155,6 @@ int main (void) {
   rcc_clock_setup_in_hse_8mhz_out_72mhz ();
   rcc_set_usbpre (RCC_CFGR_USBPRE_PLL_CLK_DIV1_5);
 
-  
   rcc_periph_clock_enable (RCC_TIM2);
   rcc_periph_clock_enable (RCC_GPIOA);
   rcc_periph_clock_enable (RCC_AFIO);
@@ -161,15 +162,19 @@ int main (void) {
   
   /*Enable transistor switch to make usb autodetect work*/
   rcc_periph_clock_enable(RCC_GPIOB);
+
+  dwt_enable_cycle_counter();
+
+
   gpio_set_mode(GPIOB, GPIO_MODE_OUTPUT_2_MHZ,
 		GPIO_CNF_OUTPUT_OPENDRAIN, GPIO9);
   gpio_set(GPIOB, GPIO9);
 
-  for (int i = 0; i < 0x80000; i++)
-    __asm__("nop");
+  // Pause 5ms
+  usleep(5000);
   gpio_clear(GPIOB, GPIO9);
 
-  
+  // Set up and start the USB peripheral.
   usbd_dev = usbd_init(&st_usbfs_v1_usb_driver, &dev, &config, usb_strings, 3, usbd_control_buffer, sizeof(usbd_control_buffer));
   usbd_register_set_config_callback(usbd_dev, cdcacm_set_config);
 
