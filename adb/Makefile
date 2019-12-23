@@ -1,10 +1,11 @@
 BINARY = main
+STD = -std=gnu99
 
 CFLAGS += -I ../common
 
 OBJS += ../common/util.o
 OBJS += ../common/adb.o
-OBJS += ../common/cdcacm.o
+OBJS += ../common/usb.o
 
 LDSCRIPT = ../stm32-maplemini.ld
 
