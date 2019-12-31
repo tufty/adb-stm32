@@ -4,6 +4,100 @@
 #include <libopencmsis/core_cm3.h>
 #include <libopencm3/cm3/dwt.h>
 
+static const char * banner =
+  "   ADB Terminal STM32\r\n(c) 2019 Simon Stapleton\r\n\r\n> ";
+
+static const char * usage = "Commands :\r\nR        : ADB Bus Reset\r\nF        : ADB Flush\r\ndtr  : Device d Talk Register r\r\ndlrx : Device d Listen Register r Data x\r\nP        : Poll last command until ^C\r\n%        : Toggle binary output\r\n#        : Toggle hex output\r\n<return> : Repeat last command\r\n\r\n";
+
+char    g_cmd[20] = "2t3\0                ";
+uint8_t g_cmd_idx = 0;
+bool    g_cmd_poll = false;
+
+
+static signed char getc (void) {
+  while (usb_vcp_avail() == 0) {
+    __WFI();
+  }
+  signed char c = usb_vcp_recv_byte();
+
+  // -1 means dropped connection
+  if (-1 == c) return c;
+
+  // Echo the charcter back
+  usb_vcp_send_byte (c);
+  // Add a newline on carriage return
+  if ('\r' == c)
+    usb_vcp_send_byte('\n');
+  
+  return c;
+}
+
+static uint8_t htoi (char the_char) {
+  if (the_char <= '9') 
+    return the_char - '0';
+  if (the_char <= 'F')
+    return the_char - 'A' + 10;
+  else
+    return the_char - 'a' + 10;
+}
+
+static char itoh (uint8_t i) {
+  if (i >= 10)
+    return 'a' + i - 10;
+  else
+    return '0' + i;
+}
+
+static bool get_command (void) {
+  while (1) {
+    signed char c = getc();
+
+    // Dropped connection?
+    if (-1 == c) return false;
+    // User hit return, run the command
+    if ('\r' == c) return true;
+    // backspace, not sure if this works
+    if (('\b' == c)  && (0 < g_cmd_idx)) {
+      g_cmd[--g_cmd_idx] = 0;
+    } else if ('p' == c) {
+      g_cmd_poll = !g_cmd_poll;
+    } else {
+      g_cmd[g_cmd_idx++] = c;
+      g_cmd[g_cmd_idx] = 0;
+
+      // Auto-run command at 19 characters
+      if (19 == g_cmd_idx)
+	return true;
+    }
+  }
+}   
+
+
+static void start_command (void) {
+  uint8_t cmd = 0;
+  switch (g_cmd[1]) {
+  case 'l':
+  case 'L':
+    cmd = 0x08;
+    break;
+  case 't':
+  case 'T':
+    cmd = 0x0a;
+    break;
+  default:
+    break;
+  }
+  cmd |= htoi(g_cmd[0]) << 4;
+  cmd |= htoi(g_cmd[2]);
+
+  usb_vcp_printf("send command 0x%x, press a key\r\n", cmd);
+  while (usb_vcp_avail() != 0) getc();
+
+  adb_send_command(cmd);
+  
+  g_cmd_idx = 0;
+}
+
 int main (void) {
 
   // Set up clock and usb prescaler.
@@ -15,15 +109,20 @@ int main (void) {
   rcc_periph_clock_enable (RCC_GPIOB);
   rcc_periph_clock_enable (RCC_AFIO);
   rcc_periph_clock_enable (RCC_DMA1);
-  rcc_periph_clock_enable (RCC_OTGFS);
 
   dwt_enable_cycle_counter();
 
   usb_vcp_init();
-  
+  adb_common_setup();
+
   while (1) {
-    usleep (1000000);
-    usb_vcp_send_strn("Hello from ADBTerm\r\n", 20); 
-    __WFI();
+    // Wait for connect
+    while (!usb_vcp_is_connected()) __WFI();
+    
+    usb_vcp_printf(banner);
+    
+    while (get_command()) {
+      start_command();
+    }
   }
 }

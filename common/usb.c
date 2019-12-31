@@ -25,6 +25,7 @@
 #include "usb.h"
 
 #include <libopencm3/cm3/nvic.h>
+#include <libopencm3/cm3/dwt.h>
 #include <libopencm3/stm32/rcc.h>
 #include <libopencm3/stm32/gpio.h>
 #include <libopencm3/usb/usbd.h>
@@ -413,7 +414,8 @@ void usb_vcp_init(void) {
   // A10 - USB_ID (not currently used)
   // A11 - USB D-
   // A12 - USB D+
-	
+  dwt_enable_cycle_counter();
+
   fill_usb_serial();
 
   gpio_set_mode (GPIOB, GPIO_MODE_OUTPUT_2_MHZ, GPIO_CNF_OUTPUT_OPENDRAIN, GPIO9);

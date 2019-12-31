@@ -9,7 +9,6 @@
 #include <libopencm3/cm3/nvic.h>
 #include <libopencm3/cm3/sync.h>
 
-
 // Defines for the various constants we need.
 static const enum rcc_periph_clken _rcc_adb_timer = RCC_TIM2;
 static const enum rcc_periph_clken _rcc_adb_gpio = RCC_GPIOA;
@@ -22,10 +21,13 @@ static const uint16_t _adb_0_bit_time = 65;
 
 // Super low level functions
 void adb_common_setup (void);
-void adb_send_bits (void);
+void adb_send_bits (uint16_t count, uint16_t * timing_data);
 void adb_receive_bits (void);
 
 // API functions
 void adb_attn (void);
+
+
+void adb_send_command(uint8_t command);
 
 #endif /* __ADB_H__ */

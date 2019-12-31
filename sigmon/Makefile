@@ -4,7 +4,6 @@ STD = -std=gnu99
 CFLAGS += -I ../common
 
 OBJS += ../common/util.o
-OBJS += ../common/adb.o
 OBJS += ../common/usb.o
 OBJS += ../common/StrPrintf.o
 
