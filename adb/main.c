@@ -7,11 +7,50 @@
 static const char * banner =
   "   ADB Terminal STM32\r\n(c) 2019 Simon Stapleton\r\n\r\n> ";
 
-static const char * usage = "Commands :\r\nR        : ADB Bus Reset\r\nF        : ADB Flush\r\ndtr  : Device d Talk Register r\r\ndlrx : Device d Listen Register r Data x\r\nP        : Poll last command until ^C\r\n%        : Toggle binary output\r\n#        : Toggle hex output\r\n<return> : Repeat last command\r\n\r\n";
+static const char * usage = "ADB Line on PA15\r\nCommands :\r\nR        : ADB Bus Reset\r\nF        : ADB Flush\r\ndtr  : Device d Talk Register r\r\ndlrx : Device d Listen Register r Data x\r\nP        : Poll last command until ^C\r\n%%        : Toggle binary output\r\n#        : Toggle hex output\r\n@       : Toggle bit timings\r\n<return> : Repeat last command\r\n\r\n";
 
 char    g_cmd[20] = "2t3\0                ";
 uint8_t g_cmd_idx = 0;
 bool    g_cmd_poll = false;
+
+
+static void adb_tester (void) {
+  // Set our GPIO to output mode
+  gpio_set_mode  (GPIOA, GPIO_MODE_OUTPUT_2_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO15);
+  gpio_clear     (GPIOA, GPIO15);
+  usleep         (100);
+  gpio_set       (GPIOA, GPIO15);
+  usleep         (200);
+  gpio_clear     (GPIOA, GPIO15);
+  usleep         (300);
+  gpio_set       (GPIOA, GPIO15);
+  usleep         (400);
+  gpio_clear     (GPIOA, GPIO15);
+  usleep         (500);
+  gpio_set       (GPIOA, GPIO15);
+  usleep         (600);
+  gpio_clear     (GPIOA, GPIO15);
+  usleep         (700);
+  gpio_set       (GPIOA, GPIO15);
+  usleep         (800);
+  gpio_clear     (GPIOA, GPIO15);
+  usleep         (100);
+  gpio_set       (GPIOA, GPIO15);
+  usleep         (200);
+  gpio_clear     (GPIOA, GPIO15);
+  usleep         (300);
+  gpio_set       (GPIOA, GPIO15);
+  usleep         (400);
+  gpio_clear     (GPIOA, GPIO15);
+  usleep         (500);
+  gpio_set       (GPIOA, GPIO15);
+  usleep         (600);
+  gpio_clear     (GPIOA, GPIO15);
+  usleep         (700);
+  gpio_set       (GPIOA, GPIO15);
+  usleep         (800);
+  gpio_clear     (GPIOA, GPIO15);
+}
 
 
 static signed char getc (void) {
@@ -49,6 +88,7 @@ static char itoh (uint8_t i) {
 }
 
 static bool get_command (void) {
+  g_cmd_idx = 0;
   while (1) {
     signed char c = getc();
 
@@ -75,6 +115,15 @@ static bool get_command (void) {
 
 static void start_command (void) {
   uint8_t cmd = 0;
+  switch (g_cmd[0]) {
+  case 'h':
+  case 'H':
+  case '?':
+    usb_vcp_printf(usage);
+    return;
+  default:
+    break;
+  }
   switch (g_cmd[1]) {
   case 'l':
   case 'L':
@@ -84,6 +133,11 @@ static void start_command (void) {
   case 'T':
     cmd = 0x0a;
     break;
+  case '#':
+  case '%':
+  case '@':
+    usb_vcp_printf(usage);
+    return;
   default:
     break;
   }
@@ -94,6 +148,8 @@ static void start_command (void) {
   while (usb_vcp_avail() != 0) getc();
 
   adb_send_command(cmd);
+
+  usb_vcp_printf(" ... sent\r\n", cmd);
   
   g_cmd_idx = 0;
 }
@@ -120,9 +176,14 @@ int main (void) {
     while (!usb_vcp_is_connected()) __WFI();
     
     usb_vcp_printf(banner);
-    
+    while (1) {
+      adb_send_command(0x3a);
+      usleep(2000);
+    }
+      
     while (get_command()) {
       start_command();
+      //adb_tester();
     }
   }
 }

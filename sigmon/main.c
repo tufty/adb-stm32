@@ -31,7 +31,7 @@ const uint8_t STOP_TIMEOUT = 1;
 const uint8_t STOP_OVERCAPTURE = 2;
 const uint8_t STOP_USER = 4;
 
-char * banner = "Signal monitor\r\n(c)2019 Simon Stapleton\r\n\r\nWaiting for trigger\r\n";
+char * banner = "Signal monitor\r\n(c) 2019 Simon Stapleton\r\nWaiting for trigger\r\n";
 bool trigger = false; /* true = trigger on rising edge */
 
 static void wait_for_trigger (void) {
@@ -39,43 +39,48 @@ static void wait_for_trigger (void) {
   
   dma_disable_channel   (DMA1, DMA_CHANNEL6);
   timer_disable_counter (TIM3);
+  gpio_clear            (GPIOB, GPIO1);
 
   capture_count         = 0;
   stop_reason           = 0;
   
   exti_select_source    (EXTI4, GPIOB);
-  exti_set_trigger      (EXTI4, trigger ? EXTI_TRIGGER_RISING : EXTI_TRIGGER_FALLING);
+  exti_set_trigger      (EXTI4, EXTI_TRIGGER_FALLING);
   exti_enable_request   (EXTI4);
 }
 
 static void stop_capture (void) {
-  dma_disable_channel   (DMA1, DMA_CHANNEL6);
   timer_disable_counter (TIM3);
-  capture_count         = 2048 - DMA1_CNDTR6;
+  dma_disable_channel   (DMA1, DMA_CHANNEL6);
 
-  /* Set PB4 to input, so we can capture from it with EXTI */
-  gpio_set_mode(GPIOB, GPIO_MODE_INPUT, GPIO_CNF_INPUT_PULL_UPDOWN, GPIO4);
+  capture_count = 2048 - DMA1_CNDTR6;
+
+  //  if (capture_count & 1) {
+    //captures[capture_count++] = 0xfffe;
+  //}
   
   mutex_unlock          (&_mutex);
 }
 
 void exti4_isr (void) {
   /* Disable EXTI and reset the interrupt request */
-  exti_disable_request (EXTI4);
   exti_reset_request   (EXTI4);
+  exti_disable_request (EXTI4);
   gpio_set(GPIOB, GPIO1);
-  
+
+  TIM3_DIER            = 0;
   /* Enable Timer and DMA, kick it all off! */
   TIM3_CNT             = 0;
-  TIM3_DMAR            = 0;
   // Maximum transfers 2048
   DMA1_CNDTR6          = 2048;
   // Use the DMAR register as source, thus doing burst mode DMA
   DMA1_CPAR6           = (uint32_t)&TIM3_DMAR;
   DMA1_CMAR6           = (uint32_t)&(captures[0]);
 
-  /* Hook GPIO PB4 up to the timer */
-  gpio_set_mode(GPIOB, GPIO_MODE_OUTPUT_2_MHZ, GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, GPIO4);
+  TIM3_SR = 0;
+  dma_clear_interrupt_flags (DMA1, DMA_CHANNEL6, DMA_GIF);
+  
+  TIM3_DIER            = TIM_DIER_TDE | TIM_DIER_CC3IE;
   
   dma_enable_channel   (DMA1, DMA_CHANNEL6);
   timer_enable_counter (TIM3);
@@ -88,9 +93,19 @@ void dma1_channel6_isr (void) {
 }
 
 void tim3_isr (void) {
-  timer_clear_flag (TIM3, TIM_SR_CC3IF);
-  stop_capture();
-  stop_reason = STOP_TIMEOUT;
+  /* if (TIM3_SR & TIM_SR_CC1IF) { */
+  /*   captures[capture_count++] = TIM3_CCR1; */
+  /*   timer_clear_flag (TIM3, TIM_SR_CC1IF); */
+  /* } */
+  /* if (TIM3_SR & TIM_SR_CC2IF) { */
+  /*   captures[capture_count++] = TIM3_CCR2; */
+  /*   timer_clear_flag (TIM3, TIM_SR_CC2IF); */
+  /* } */
+  if (TIM3_SR & TIM_SR_CC3IF) {
+    timer_clear_flag (TIM3, TIM_SR_CC3IF);
+    stop_capture();
+    stop_reason = STOP_TIMEOUT;
+  }
 }
 
 int main (void) {
@@ -116,19 +131,21 @@ int main (void) {
   gpio_primary_remap  (AFIO_MAPR_SWJ_CFG_JTAG_OFF_SW_OFF, AFIO_MAPR_TIM3_REMAP_NO_REMAP); 
   gpio_primary_remap  (AFIO_MAPR_SWJ_CFG_JTAG_OFF_SW_OFF, AFIO_MAPR_TIM3_REMAP_PARTIAL_REMAP);
   
-  /* Set PB4 to input, so we can capture from it with EXTI */
+  /* Set PB4 to input, so we can capture from it */
   gpio_set_mode(GPIOB, GPIO_MODE_INPUT, GPIO_CNF_INPUT_PULL_UPDOWN, GPIO4);
+  // Set PB4 pull up
+  GPIOB_ODR |= GPIO4;
   /* set LED to output, use it to signal capturing */
   gpio_set_mode(GPIOB, GPIO_MODE_OUTPUT_2_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO1);
-  gpio_set(GPIOB, GPIO1);
+  gpio_clear(GPIOB, GPIO1);
 
   // Do basic setup of timer 3.
    // Timer counts up, internal clock, preload enabled
   TIM3_CR1 = TIM_CR1_CKD_CK_INT | TIM_CR1_ARPE | TIM_CR1_DIR_UP;
   TIM3_CR2 = 0;
 
-  // Slave mode trigger on channel 2, trigger generates reset 
-  TIM3_SMCR = TIM_SMCR_TS_TI2FP2 | TIM_SMCR_SMS_RM;
+  // Slave mode trigger on channel 1 falling edge, trigger generates reset 
+  TIM3_SMCR = TIM_SMCR_ETP | TIM_SMCR_TS_TI1FP1 | TIM_SMCR_SMS_RM;
 
   // enable trigger DMA transfer and interrupt on capture-compare channel 3
   TIM3_DIER = TIM_DIER_TDE | TIM_DIER_CC3IE;
@@ -138,7 +155,7 @@ int main (void) {
   TIM3_CCMR1 = TIM_CCMR1_CC2S_IN_TI1 | TIM_CCMR1_CC1S_IN_TI1 | TIM_CCMR1_IC1F_CK_INT_N_4 | TIM_CCMR1_IC2F_CK_INT_N_4;
   // CC3 will count up to the value in CCR3, preload and fast enabled, no output to its pin
   TIM3_CCMR2 = TIM_CCMR2_OC3M_FROZEN | TIM_CCMR2_OC3PE | TIM_CCMR2_OC3FE | TIM_CCMR2_CC3S_OUT;
-  // enable the 3 capture ompare channels, invert polarity on CC2
+  // enable the 3 capture ompare channels, invert polarity on CC1
   TIM3_CCER = TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC3E | TIM_CCER_CC2P;
   // Reset the counter
   TIM3_CNT = 0;
@@ -148,7 +165,7 @@ int main (void) {
   TIM3_ARR = 0xffff;
   TIM3_CCR3 = 0xfffe;
   // Set up dma for bursts of 2, CC1 & CC2, which is where our bit timing data should reside
-  TIM3_DCR = (2 << 8) | (0x34 >> 2);
+  TIM3_DCR = ((2 - 1) << 8) | (0x34 >> 2);
   TIM3_DMAR = 0;
 
   // Set up DMA to do 16 bit transfers, incrementing the memory address every time, interrupt on transfer complete, priority high
@@ -161,9 +178,11 @@ int main (void) {
     
     usb_vcp_printf(banner);
 
+    for (int i = 0; i < 2048; i++) captures[i] = 0xffff;
+
     wait_for_trigger();
 
-    while ((_mutex == MUTEX_LOCKED) || (usb_vcp_avail() != 0)) {
+    while ((_mutex == MUTEX_LOCKED) && (usb_vcp_avail() == 0)) {
       __WFI();
     }
 
@@ -172,7 +191,8 @@ int main (void) {
 
     gpio_clear(GPIOB, GPIO1);
 
-    usb_vcp_printf("Capture stopped due to %s\n\n", stop_reason == 0 ? "user keypress" : stop_reason == STOP_OVERCAPTURE ? "overcapture" : "timeout");
+    usb_vcp_printf("Capture stopped due to %s\n", stop_reason == 0 ? "user keypress" : stop_reason == STOP_OVERCAPTURE ? "overcapture" : "timeout");
+    usb_vcp_printf("Captured %u samples\n", capture_count); 
 
     for (int i = 0; i < capture_count; i += 2) {
       usb_vcp_printf("%u, %u\n", captures[i], captures[i+1]);

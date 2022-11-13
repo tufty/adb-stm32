@@ -15,8 +15,8 @@ static const enum rcc_periph_clken _rcc_adb_gpio = RCC_GPIOA;
 static const enum rcc_periph_clken _rcc_adb_dma = RCC_DMA1;
 
 static const uint32_t _adb_bit_length = 100;
-static const uint16_t _adb_1_bit_time = 35;
-static const uint16_t _adb_0_bit_time = 65;
+static const uint16_t _adb_1_bit_time = 66;
+static const uint16_t _adb_0_bit_time = 34;
 
 
 // Super low level functions

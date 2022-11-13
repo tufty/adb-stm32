@@ -6,6 +6,7 @@ void adb_bit_send_receive_done (void);
 
 #define ADB_TALK (device, register)   (((device) & 0xf) << 4) | 0x0c | ((register) & 0x3)
 #define ADB_LISTEN (device, register) (((device) & 0xf) << 4) | 0x08 | ((register) & 0x3)
+#define MAX_RX 66 * 2
 
 struct {
   uint16_t count;
@@ -46,32 +47,73 @@ struct {
 // is 5v tolerant.
 
 mutex_t _adb_mutex = MUTEX_UNLOCKED;
+uint16_t prescale;
 
-void adb_attn (void) {
-  // Lock the mutex
-  mutex_lock     (&_adb_mutex);
-
-  // Set our GPIO to output mode
-  gpio_set_mode  (GPIOA, GPIO_MODE_OUTPUT_2_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO15);
-  gpio_set       (GPIOA, GPIO15);
-  usleep         (800 - _adb_1_bit_time);
- 
-  mutex_unlock   (&_adb_mutex);
+void debug_wiggle() {
+  uint16_t meh[2] = {25, 75};
+  adb_send_bits (2, &(meh[0]));
 }
 
+
+void adb_attn (void) {
+  mutex_lock     (&_adb_mutex);
+
+  // Set our GPIO to output mode, AF on TiM2 remapped to PA15
+  gpio_set_mode  (GPIOA, GPIO_MODE_OUTPUT_2_MHZ, GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, GPIO15);
+  gpio_clear     (GPIOA, GPIO15);
+
+  // Timer counts up, internal clock, preload enabled
+  TIM2_CR1    = TIM_CR1_CKD_CK_INT | TIM_CR1_ARPE | TIM_CR1_DIR_DOWN | TIM_CR1_URS;
+  TIM2_CR2    = 0;
+  TIM2_SMCR   = 0;
+  TIM2_DIER   = TIM_DIER_UIE;
+  TIM2_CCER   = 0;
+  TIM2_CCMR1  = TIM_CCMR1_OC1M_PWM2 | TIM_CCMR1_OC1PE | TIM_CCMR1_OC1FE | TIM_CCMR1_CC1S_OUT;
+  TIM2_CCER   = TIM_CCER_CC1P | TIM_CCER_CC1E;
+  TIM2_CNT    = 800;
+  TIM2_ARR    = 800;
+  TIM2_CCR1   = _adb_1_bit_time;
+  TIM2_DCR    = 0;
+  TIM2_DMAR   = 0;
+
+  timer_enable_counter (TIM2);
+
+}
+
+
 void adb_send_command (uint8_t command) {
-  uint16_t timings[10] = { 0, 0, 0, 0, 0, 0, 0, 0, 65 };
+
+  uint16_t timings[10] = {_adb_1_bit_time, 0, 0, 0, 0, 0, 0, 0, 0, _adb_0_bit_time };
 
   for (uint8_t i = 0; i < 8; i++) {
-    timings[i] = ((command << i) & 0x80) ? _adb_1_bit_time : _adb_0_bit_time;
+    timings[i + 1] = ((command << i) & 0x80) ? _adb_1_bit_time : _adb_0_bit_time;
   }
 
-  usb_vcp_printf("sending %u %u %u %u %u %u %u %u %u %u\r\n", _adb_1_bit_time,
+  usb_vcp_printf("sending %u %u %u %u %u %u %u %u %u %u\r\n",
 		 timings[0], timings[1], timings[2], timings[3], timings[4],
-		 timings[5], timings[6], timings[7], timings[8]);
+		 timings[5], timings[6], timings[7], timings[8], timings[9]);
+
+  //debug_wiggle();
 
   adb_attn      ();
-  adb_send_bits (9, &(timings[0]));
+
+  // Hang on the mutex until all transmission has completed
+  mutex_lock(&_adb_mutex);
+  mutex_unlock(&_adb_mutex);
+
+  adb_send_bits (9, &(timings[1]));
+
+  // Receive any transmitted data or timeout
+  // adb_receive_bits ();
+
+  // Hang on the mutex until all transmission has completed
+  mutex_lock(&_adb_mutex);
+  mutex_unlock(&_adb_mutex);
+
+  uint32_t received = MAX_RX - DMA1_CNDTR5;
+  
+  usb_vcp_printf("received %u bits\r\n", received << 1);
+
 };
   
 
@@ -82,6 +124,13 @@ void adb_common_setup (void) {
   gpio_primary_remap  (AFIO_MAPR_SWJ_CFG_JTAG_OFF_SW_OFF, AFIO_MAPR_TIM2_REMAP_PARTIAL_REMAP1); 
   nvic_enable_irq     (NVIC_DMA1_CHANNEL5_IRQ);
   nvic_enable_irq     (NVIC_TIM2_IRQ);
+
+  // Set up pin as input, pulled high, so the line is correct.
+  gpio_set_mode       (GPIOA, GPIO_MODE_INPUT, GPIO_CNF_INPUT_PULL_UPDOWN, GPIO15);
+  GPIOA_ODR |= GPIO15;
+
+  // Set up for a 1usec clock tick 
+  TIM2_PSC = 71;
 }
 
 
@@ -96,12 +145,17 @@ void tim2_isr (void) {
   if (timer_get_flag (TIM2, TIM_SR_CC3IF)) {
     timer_clear_flag (TIM2, TIM_SR_CC3IF);
   }
+  if (timer_get_flag (TIM2, TIM_SR_UIF)) {
+    timer_clear_flag (TIM2, TIM_SR_UIF);
+  }
   adb_bit_send_receive_done ();
 }
 
 void adb_bit_send_receive_done (void) {
   timer_disable_counter (TIM2);
   dma_disable_channel   (DMA1, DMA_CHANNEL5);
+  gpio_set_mode (GPIOA, GPIO_MODE_INPUT, GPIO_CNF_INPUT_PULL_UPDOWN, GPIO15);
+  GPIOA_ODR |= GPIO15;
   mutex_unlock          (&_adb_mutex);
 }
 
@@ -112,30 +166,30 @@ void adb_bit_send_receive_done (void) {
 
   // Set our GPIO to output mode, AF on TiM2 remapped to PA15
   gpio_set_mode  (GPIOA, GPIO_MODE_OUTPUT_2_MHZ, GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, GPIO15);
+  gpio_clear     (GPIOA, GPIO15);
 
-  // Timer counts up, internal clock, preload enabled
-  TIM2_CR1    = TIM_CR1_CKD_CK_INT | TIM_CR1_ARPE | TIM_CR1_DIR_UP;
+  // Timer counts down, internal clock, preload enabled
+  TIM2_CR1    = TIM_CR1_CKD_CK_INT | TIM_CR1_ARPE | TIM_CR1_DIR_DOWN;
   TIM2_CR2    = 0;
   TIM2_SMCR   = 0;
   TIM2_DIER   = TIM_DIER_CC1DE;
   TIM2_CCER   = 0;
   TIM2_CCMR1  = TIM_CCMR1_OC1M_PWM2 | TIM_CCMR1_OC1PE | TIM_CCMR1_OC1FE | TIM_CCMR1_CC1S_OUT;
   TIM2_CCER   = TIM_CCER_CC1P | TIM_CCER_CC1E;
-  TIM2_CNT    = 0;
-  TIM2_PSC    = 71;
+  TIM2_CNT    = _adb_bit_length;
   TIM2_ARR    = _adb_bit_length;
-  TIM2_CCR1   = _adb_1_bit_time;
-  TIM2_DCR    = 0;
+  TIM2_CCR1   = timing_data[0];
+  TIM2_DCR    = ((1 - 1) << 8) | (0x34 >> 2);
   TIM2_DMAR   = 0;
 
   // Set up DMA to do 16 bit transfers memory->peripheral, incrementing the memory address every time,
   // interrupt on transfer complete, priority high
   DMA1_CCR5   = DMA_CCR_PL_HIGH | DMA_CCR_MSIZE_16BIT | DMA_CCR_PSIZE_16BIT | DMA_CCR_MINC | DMA_CCR_DIR | DMA_CCR_TCIE;
-  // Maximum transfers = number of bits to transfer + 1 stop bit
+  // Maximum transfers = 1 start bit + number of bits to transfer + 1 stop bit
   DMA1_CNDTR5 = count;
   // Use the DMAR register as source, thus doing burst mode DMA
-  DMA1_CPAR5  = (uint32_t)&TIM2_CCR1;
-  DMA1_CMAR5  = (uint32_t)timing_data;
+  DMA1_CPAR5  = (uint32_t)&TIM2_DMAR;
+  DMA1_CMAR5  = (uint32_t)&timing_data[1];
   
   dma_enable_channel   (DMA1, DMA_CHANNEL5);
   timer_enable_counter (TIM2);
@@ -152,8 +206,9 @@ void adb_receive_bits (void) {
   // Lock the mutex, we're working
   mutex_lock    (&_adb_mutex);
 
-  // Set our GPIO to input
+  // Set our GPIO to input, pull up.
   gpio_set_mode (GPIOA, GPIO_MODE_INPUT, GPIO_CNF_INPUT_PULL_UPDOWN, GPIO15);
+  GPIOA_ODR |= GPIO15;
 
   // Timer counts up, internal clock, preload enabled
   TIM2_CR1 = TIM_CR1_CKD_CK_INT | TIM_CR1_ARPE | TIM_CR1_DIR_UP;
@@ -174,8 +229,6 @@ void adb_receive_bits (void) {
   TIM2_CCER = TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC3E | TIM_CCER_CC2P;
   // Reset the counter
   TIM2_CNT = 0;
-  // Prescaler to 71, 72MHz clock so 1µsec "tick"
-  TIM2_PSC = 71;
   // Set the period to something we'll never reach
   TIM2_ARR = 6000;
   // CC3 timeout set to 200 µsec, i.e 2 bit frames.  This is the same as the SRQ period, but we should start about half way through
@@ -187,7 +240,7 @@ void adb_receive_bits (void) {
   // Set up DMA to do 16 bit transfers, incrementing the memory address every time, interrupt on transfer complete, priority high
   DMA1_CCR5 = DMA_CCR_PL_HIGH | DMA_CCR_MSIZE_16BIT | DMA_CCR_PSIZE_16BIT | DMA_CCR_MINC | DMA_CCR_TCIE;
   // Maximum transfers 8 * 8 bits + start & stop, 2 values per bit
-  DMA1_CNDTR5 = 66 * 2;
+  DMA1_CNDTR5 = MAX_RX;
   // Use the DMAR register as source, thus doing burst mode DMA
   DMA1_CPAR5 = (uint32_t)&TIM2_DMAR;
   DMA1_CMAR5 = (uint32_t)&(bit_timings.receive_data[0]);
