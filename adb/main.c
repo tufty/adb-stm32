@@ -14,45 +14,6 @@ uint8_t g_cmd_idx = 0;
 bool    g_cmd_poll = false;
 
 
-static void adb_tester (void) {
-  // Set our GPIO to output mode
-  gpio_set_mode  (GPIOA, GPIO_MODE_OUTPUT_2_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO15);
-  gpio_clear     (GPIOA, GPIO15);
-  usleep         (100);
-  gpio_set       (GPIOA, GPIO15);
-  usleep         (200);
-  gpio_clear     (GPIOA, GPIO15);
-  usleep         (300);
-  gpio_set       (GPIOA, GPIO15);
-  usleep         (400);
-  gpio_clear     (GPIOA, GPIO15);
-  usleep         (500);
-  gpio_set       (GPIOA, GPIO15);
-  usleep         (600);
-  gpio_clear     (GPIOA, GPIO15);
-  usleep         (700);
-  gpio_set       (GPIOA, GPIO15);
-  usleep         (800);
-  gpio_clear     (GPIOA, GPIO15);
-  usleep         (100);
-  gpio_set       (GPIOA, GPIO15);
-  usleep         (200);
-  gpio_clear     (GPIOA, GPIO15);
-  usleep         (300);
-  gpio_set       (GPIOA, GPIO15);
-  usleep         (400);
-  gpio_clear     (GPIOA, GPIO15);
-  usleep         (500);
-  gpio_set       (GPIOA, GPIO15);
-  usleep         (600);
-  gpio_clear     (GPIOA, GPIO15);
-  usleep         (700);
-  gpio_set       (GPIOA, GPIO15);
-  usleep         (800);
-  gpio_clear     (GPIOA, GPIO15);
-}
-
-
 static signed char getc (void) {
   while (usb_vcp_avail() == 0) {
     __WFI();
@@ -115,6 +76,8 @@ static bool get_command (void) {
 
 static void start_command (void) {
   uint8_t cmd = 0;
+  uint8_t data[8];
+  
   switch (g_cmd[0]) {
   case 'h':
   case 'H':
@@ -127,11 +90,19 @@ static void start_command (void) {
   switch (g_cmd[1]) {
   case 'l':
   case 'L':
-    cmd = 0x08;
+    cmd = ADB_LISTEN;
+    adb_send_command( htoi(g_cmd[0]), cmd, htoi(g_cmd[2]));
+    usleep(200);
+    adb_start();
+    for (uint8_t idx = 2; idx < g_cmd_idx; idx += 2) {
+      adb_send_byte(htoi(g_cmd[idx]) << 4 | htoi(g_cmd[idx]));
+    }
+    adb_sync();
+    
     break;
   case 't':
   case 'T':
-    cmd = 0x0a;
+    adb_send_command( htoi(g_cmd[0]), cmd, htoi(g_cmd[2]));
     break;
   case '#':
   case '%':
@@ -141,15 +112,7 @@ static void start_command (void) {
   default:
     break;
   }
-  cmd |= htoi(g_cmd[0]) << 4;
-  cmd |= htoi(g_cmd[2]);
 
-  usb_vcp_printf("send command 0x%x, press a key\r\n", cmd);
-  while (usb_vcp_avail() != 0) getc();
-
-  adb_send_command(cmd);
-
-  usb_vcp_printf(" ... sent\r\n", cmd);
   
   g_cmd_idx = 0;
 }
@@ -171,19 +134,42 @@ int main (void) {
   usb_vcp_init();
   adb_common_setup();
 
+  // alternate sync signal
+  gpio_set_mode (GPIOB, GPIO_MODE_OUTPUT_10_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO12);
+  gpio_clear (GPIOB, GPIO12);
+
+  
   while (1) {
     // Wait for connect
     while (!usb_vcp_is_connected()) __WFI();
     
     usb_vcp_printf(banner);
+
+    
     while (1) {
-      adb_send_command(0x3a);
-      usleep(2000);
+      for (int device = 0; device < 16; device++) {
+	  gpio_set_mode  (GPIOA, GPIO_MODE_OUTPUT_10_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO15);
+
+  gpio_set(GPIOB, GPIO12);
+	adb_attn();
+  gpio_clear (GPIOB, GPIO12);
+        adb_start();
+	adb_send_byte(0x5a);
+	  gpio_set_mode  (GPIOA, GPIO_MODE_OUTPUT_10_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO15);
+
+	
+	adb_sync();
+	/* usleep(200); */
+	/* adb_start(); */
+	/* adb_send_byte(0xa5); */
+	//	adb_send_byte(0xa5);	
+	//	adb_sync();
+	usleep(2000);
+      }
     }
-      
+          
     while (get_command()) {
       start_command();
-      //adb_tester();
     }
   }
 }
