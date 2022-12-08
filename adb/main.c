@@ -5,7 +5,7 @@
 #include <libopencm3/cm3/dwt.h>
 
 static const char * banner =
-  "   ADB Terminal STM32\r\n(c) 2019 Simon Stapleton\r\n\r\n> ";
+  "   ADB Terminal STM32\r\n(c) 2019 Simon Stapleton\r\n> ";
 
 static const char * usage = "ADB Line on PA15\r\nCommands :\r\nR        : ADB Bus Reset\r\nF        : ADB Flush\r\ndtr  : Device d Talk Register r\r\ndlrx : Device d Listen Register r Data x\r\nP        : Poll last command until ^C\r\n%%        : Toggle binary output\r\n#        : Toggle hex output\r\n@       : Toggle bit timings\r\n<return> : Repeat last command\r\n\r\n";
 
@@ -75,9 +75,14 @@ static bool get_command (void) {
 
 
 static void start_command (void) {
-  uint8_t cmd = 0;
   uint8_t data[8];
-  
+  uint8_t count = 0;
+
+  for (uint8_t idx = 2; idx < g_cmd_idx; idx += 2) {
+    data[(idx - 2) >> 1] = (htoi(g_cmd[idx]) << 4 | htoi(g_cmd[idx]));
+    count ++;
+  }
+ 
   switch (g_cmd[0]) {
   case 'h':
   case 'H':
@@ -90,20 +95,15 @@ static void start_command (void) {
   switch (g_cmd[1]) {
   case 'l':
   case 'L':
-    cmd = ADB_LISTEN;
-    adb_send_command( htoi(g_cmd[0]), cmd, htoi(g_cmd[2]));
-    usleep(200);
-    adb_start();
-    for (uint8_t idx = 2; idx < g_cmd_idx; idx += 2) {
-      adb_send_byte(htoi(g_cmd[idx]) << 4 | htoi(g_cmd[idx]));
-    }
-    adb_sync();
-    
+   
+    adb_listen (htoi(g_cmd[0]), htoi(g_cmd[2]), &count, data);
     break;
   case 't':
   case 'T':
-    adb_send_command( htoi(g_cmd[0]), cmd, htoi(g_cmd[2]));
+
+    adb_talk (htoi(g_cmd[0]), htoi(g_cmd[2]), &count, data);
     break;
+    
   case '#':
   case '%':
   case '@':
@@ -138,7 +138,6 @@ int main (void) {
   gpio_set_mode (GPIOB, GPIO_MODE_OUTPUT_10_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO12);
   gpio_clear (GPIOB, GPIO12);
 
-  
   while (1) {
     // Wait for connect
     while (!usb_vcp_is_connected()) __WFI();
@@ -147,24 +146,36 @@ int main (void) {
 
     
     while (1) {
+      
       for (int device = 0; device < 16; device++) {
-	  gpio_set_mode  (GPIOA, GPIO_MODE_OUTPUT_10_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO15);
-
-  gpio_set(GPIOB, GPIO12);
-	adb_attn();
-  gpio_clear (GPIOB, GPIO12);
-        adb_start();
-	adb_send_byte(0x5a);
-	  gpio_set_mode  (GPIOA, GPIO_MODE_OUTPUT_10_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO15);
-
+      uint8_t data[128] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+      uint8_t count;
 	
-	adb_sync();
-	/* usleep(200); */
-	/* adb_start(); */
-	/* adb_send_byte(0xa5); */
-	//	adb_send_byte(0xa5);	
-	//	adb_sync();
-	usleep(2000);
+      // 1us sync pulse on pb12
+      gpio_set(GPIOB, GPIO12);
+      usleep (20);
+      gpio_clear (GPIOB, GPIO12);
+      
+      adb_talk (4, 0, &count, data);
+
+      if (count) {
+	usb_vcp_printf ("%u :", count);
+	for (uint8_t i = 0; i < count; i++) {
+	  usb_vcp_printf (" %02x", data[i]);
+	}
+	usb_vcp_printf("\r");
+      }
+      /* adb_start(); */
+      /* adb_send_byte(0xa5); */
+      //	adb_send_byte(0xa5);	
+      //	adb_sync();
       }
     }
           

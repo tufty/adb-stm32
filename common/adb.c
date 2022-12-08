@@ -6,17 +6,23 @@ void adb_bit_send_receive_done (void);
 
 #define ADB_TALK(d,r)   (((d) & 0xf) << 4) | 0x0c | ((r) & 0x3)
 #define ADB_LISTEN(d,r) (((d) & 0xf) << 4) | 0x08 | ((r) & 0x3)
-#define MAX_RX 66 * 2
+#define MAX_DATA_BITS (1 + (4 * 8) + 1) * 2
 
-struct {
-  uint16_t count;
-  struct {
-    uint16_t low;
-    uint16_t high;
-  } receive_data [66];
-  uint16_t send_data [65];
-} bit_timings;
+uint16_t timings[MAX_DATA_BITS];
+uint8_t timings_cnt;
 
+// State machine state for ADB
+enum {
+  ADB_SM_IDLE,
+  ADB_SM_ATTN,
+  ADB_SM_START,
+  ADB_SM_SYNC,
+  ADB_SM_EMIT,
+  ADB_SM_RECV,
+  ADB_SM_MAYBE_STOP_TO_START,
+  ADB_SM_SRQ,
+  ADB_SM_TIMEOUT,
+} _adb_sm_state;
 
 // Timer setup for dma-based output compare to generate ADB signalling.
 // Every command has the same prelude, viz:
@@ -62,40 +68,37 @@ void adb_common_setup (void) {
 
   // Set up for a 1usec clock tick 
   TIM2_PSC = 71;
+
+  _adb_sm_state = ADB_SM_IDLE;
 }
 
 void adb_attn (void) {
+  _adb_sm_state = ADB_SM_ATTN;
   gpio_set_mode  (GPIOA, GPIO_MODE_OUTPUT_10_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO15);
   gpio_clear (GPIOA, GPIO15);
   usleep(800);
+  _adb_sm_state = ADB_SM_IDLE;
 }
 
 void adb_start (void) {
+  _adb_sm_state = ADB_SM_START;
   gpio_set_mode  (GPIOA, GPIO_MODE_OUTPUT_10_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO15);
   gpio_clear (GPIOA, GPIO15);
   usleep(_adb_1_bit_low_time);
   gpio_set (GPIOA, GPIO15);
-  usleep(_adb_1_bit_high_time); 
+  usleep(_adb_1_bit_high_time);
+  _adb_sm_state = ADB_SM_IDLE;
 }
 
 void adb_sync (void) {
+  _adb_sm_state = ADB_SM_SYNC;
   gpio_set_mode  (GPIOA, GPIO_MODE_OUTPUT_10_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO15);
   gpio_clear (GPIOA, GPIO15);
   usleep(_adb_0_bit_low_time);
   gpio_set (GPIOA, GPIO15);
-  usleep(_adb_0_bit_high_time); 
+  usleep(_adb_0_bit_high_time);
+  _adb_sm_state = ADB_SM_IDLE;
 }
-
-/* // Send a byte over the ADB bus */
-/* void adb_send_byte (uint8_t data) { */
-/*   for (uint8_t i = 0; i < 8; i++) { */
-/*     uint8_t b = (data << i) & 0x80;  */
-/*     gpio_clear (GPIOA, GPIO15); */
-/*     usleep(b ? _adb_1_bit_low_time : _adb_0_bit_low_time); */
-/*     gpio_set (GPIOA, GPIO15); */
-/*     usleep(b ? _adb_1_bit_high_time : _adb_0_bit_high_time); */
-/*   } */
-/* } */
 
 void adb_listen (uint8_t dev, uint8_t reg, uint8_t *count, uint8_t * data) {
 
@@ -110,55 +113,81 @@ void adb_listen (uint8_t dev, uint8_t reg, uint8_t *count, uint8_t * data) {
     adb_send_byte (data[i]);
   }
   adb_sync();
-  gpio_set_mode (GPIOA, GPIO_MODE_INPUT, GPIO_CNF_INPUT_PULL_UPDOWN, GPIO15);
 }
 
 void adb_talk (uint8_t dev, uint8_t reg, uint8_t *count, uint8_t * data) {
   // Sequence of commands for an ADB listen command
   adb_attn         ();
   adb_start        ();
+  //  adb_sync         ();
   adb_send_byte    (ADB_TALK(dev, reg));
   adb_sync         ();
-  gpio_set_mode    (GPIOA, GPIO_MODE_INPUT, GPIO_CNF_INPUT_PULL_UPDOWN, GPIO15);
-  adb_receive_data (count, data);
+  adb_receive_bits(count, data);
 }
 
 
 
 void dma1_channel5_isr (void) {
-  if (dma_get_interrupt_flag (DMA1, DMA_CHANNEL5, DMA_TCIF)) {
-    dma_clear_interrupt_flags (DMA1, DMA_CHANNEL5, DMA_TCIF);
+  switch (_adb_sm_state) {
+  case ADB_SM_EMIT:
+    dma_disable_channel (DMA1, DMA_CHANNEL5);
+    timer_clear_flag (TIM2, TIM_SR_UIF);
+    TIM2_DIER = TIM_DIER_UIE;    
+    break;
+  case ADB_SM_RECV:
+    _adb_sm_state = ADB_SM_IDLE;
+    adb_bit_send_receive_done();
+    break;
+  default:
+    break;
   }
-  
-  dma_disable_channel (DMA1, DMA_CHANNEL5);
-  timer_clear_flag (TIM2, TIM_SR_UIF);
-  TIM2_DIER = TIM_DIER_UIE;    
+
+  DMA1_IFCR = 0x000f0000;
 }
 
 void tim2_isr (void) {
-  if (timer_get_flag (TIM2, TIM_SR_CC3IF)) {
-    timer_clear_flag (TIM2, TIM_SR_CC3IF);
+  switch (_adb_sm_state) {
+  case ADB_SM_EMIT:
+    if (timer_get_flag (TIM2, TIM_SR_UIF)) {
+      _adb_sm_state = ADB_SM_IDLE;
+      adb_bit_send_receive_done();
+    }
+    break;
+  case ADB_SM_MAYBE_STOP_TO_START:
+    if (timer_get_flag (TIM2, TIM_SR_UIF)) {
+      _adb_sm_state = ADB_SM_TIMEOUT;
+      adb_bit_send_receive_done();
+    }
+    if (timer_get_flag (TIM2, TIM_SR_CC1IF)) {
+      _adb_sm_state = ADB_SM_RECV;
+      adb_bit_send_receive_done();
+    }
+    break;
+  case ADB_SM_RECV:
+    if (timer_get_flag (TIM2, TIM_SR_UIF)) {
+      _adb_sm_state = ADB_SM_TIMEOUT;
+      adb_bit_send_receive_done();
+    }
+    if (timer_get_flag (TIM2, TIM_SR_CC2IF)) {
+      timings[timings_cnt++] = TIM2_CCR1;
+      TIM2_CNT = 0;
+    }
+   break;
+  default:
+    break;
   }
-  if (timer_get_flag (TIM2, TIM_SR_CC1IF)) {
-    timer_clear_flag (TIM2, TIM_SR_CC1IF);
-  }
-  if (timer_get_flag (TIM2, TIM_SR_UIF)) {
-    timer_clear_flag (TIM2, TIM_SR_UIF);
-  }
-    timer_disable_counter (TIM2);
 
-    adb_bit_send_receive_done ();
-
+  TIM2_SR = 0;
 }
 
 void adb_bit_send_receive_done (void) {
-  gpio_set            (GPIOA, GPIO15);
+  timer_disable_counter (TIM2);
+  dma_disable_channel(DMA1, DMA_CHANNEL5);
   mutex_unlock        (&_adb_mutex);
 }
 
 
 void adb_send_byte (uint8_t data) {
-  uint16_t timings[8] = {0, 0, 0, 0, 0, 0, 0, 0 };
 
   for (int i = 0; i < 8; i++) {
     timings[i] = ((data << i) & 0x80) ? _adb_1_bit_high_time : _adb_0_bit_high_time;
@@ -167,6 +196,7 @@ void adb_send_byte (uint8_t data) {
   /* usb_vcp_printf("d : %u %u %u %u %u %u %u %u\r", timings[0], timings[1], timings[2], timings[3], timings[4], timings[5], timings[6], timings[7]); */
   /* usleep(2000000); */
   /* return; */
+  _adb_sm_state = ADB_SM_EMIT;
   
   mutex_lock(&_adb_mutex);
   
@@ -174,7 +204,8 @@ void adb_send_byte (uint8_t data) {
   
   // Timer counts up, internal clock, preload enabled 
   TIM2_CR1 = TIM_CR1_CKD_CK_INT | TIM_CR1_ARPE | TIM_CR1_DIR_DOWN;
-  TIM2_CR2 = 0;// TIM_CR2_CCDS;
+  TIM2_CR2 = TIM_CR2_CCDS;
+  TIM2_SR = 0;
   TIM2_SMCR = 0;
   // DMA transfer on CC1
   TIM2_DIER = TIM_DIER_CC1DE;
@@ -182,6 +213,7 @@ void adb_send_byte (uint8_t data) {
 
   // PWM Mode 2 i.e. low to high on capture
   // Preload enabled, fast compare enabled, output.
+  TIM2_CCER = 0;
   TIM2_CCMR1 = TIM_CCMR1_OC1PE | TIM_CCMR1_OC1FE | TIM_CCMR1_CC1S_OUT | TIM_CCMR1_OC1M_PWM2;
   TIM2_CCMR2 = 0;
 
@@ -201,7 +233,7 @@ void adb_send_byte (uint8_t data) {
   // 16 bit transfers, memory to peripheral, high priority, increment memory each tx, interrupt on completion
   DMA1_CCR5 = DMA_CCR_MINC | DMA_CCR_MSIZE_16BIT | DMA_CCR_PSIZE_16BIT | DMA_CCR_PL_HIGH | DMA_CCR_TCIE | DMA_CCR_DIR;
   DMA1_CNDTR5 = 9;
-  DMA1_CMAR5 = (uint32_t)&(timings[0]);
+  DMA1_CMAR5 = (uint32_t)timings;
   DMA1_CPAR5 = (uint32_t)&TIM2_DMAR;
 
 
@@ -220,54 +252,84 @@ void adb_send_byte (uint8_t data) {
 // with channel 1 capturing the low->high transition and channel 2 capturing high->low.
 // Channel 3 is set up for output capture, this handles timeout via an isr.
 // We set up slave mode to reset the timer, triggered by channel 2
-void adb_receive_bits (void) {
-  static const uint8_t burst_length = 2;
-
-  // Lock the mutex, we're working
-  mutex_lock    (&_adb_mutex);
-
+void adb_receive_bits (uint8_t * count, uint8_t * data) {
+ 
   // Set our GPIO to input, pull up.
   gpio_set_mode (GPIOA, GPIO_MODE_INPUT, GPIO_CNF_INPUT_PULL_UPDOWN, GPIO15);
   GPIOA_ODR |= GPIO15;
 
-  // Timer counts up, internal clock, preload enabled
-  TIM2_CR1 = TIM_CR1_CKD_CK_INT | TIM_CR1_ARPE | TIM_CR1_DIR_UP;
-  TIM2_CR2 = 0;
+  // Lock the mutex, we're working
+  mutex_lock    (&_adb_mutex);
 
-  // Slave mode trigger on channel 2, trigger generates reset 
-  TIM2_SMCR = TIM_SMCR_TS_TI2FP2 | TIM_SMCR_SMS_RM;
+  // start by checking if the line is pulled high.  If it isn't, we're in an SRQ
+  // situation and the device we're trying to talk to isn't listening or has no
+  // data to send.
+  if (gpio_get(GPIOA, GPIO15)) {
+    _adb_sm_state = ADB_SM_MAYBE_STOP_TO_START;
 
-  // enable trigger DMA transfer and interrupt on capture-compare channel 3
-  TIM2_DIER = TIM_DIER_TDE | TIM_DIER_CC3IE;
-  // Disable all capture-compares so we can mess with the settings
-  TIM2_CCER = 0;
-  // CC1 & CC2 set up to capture PWM on TI1 with a x4 filter (4 µsec delay)
-  TIM2_CCMR1 = TIM_CCMR1_CC2S_IN_TI1 | TIM_CCMR1_CC1S_IN_TI1 | TIM_CCMR1_IC1F_CK_INT_N_4 | TIM_CCMR1_IC2F_CK_INT_N_4;
-  // CC3 will count up to the value in CCR3, preload and fast enabled, no output to its pin
-  TIM2_CCMR2 = TIM_CCMR2_OC3M_FROZEN | TIM_CCMR2_OC3PE | TIM_CCMR2_OC3FE | TIM_CCMR2_CC3S_OUT;
-  // enable the 3 capture ompare channels, invert polarity on CC2
-  TIM2_CCER = TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC3E | TIM_CCER_CC2P;
-  // Reset the counter
-  TIM2_CNT = 0;
-  // Set the period to something we'll never reach
-  TIM2_ARR = 6000;
-  // CC3 timeout set to 200 µsec, i.e 2 bit frames.  This is the same as the SRQ period, but we should start about half way through
-  TIM2_CCR3 = 200;
-  // Set up dma for bursts of 2, CC1 & CC2, which is where our bit timing data should reside
-  TIM2_DCR = ((burst_length & 0x1f) << 8) | (0x34 >> 2);
-  TIM2_DMAR = 0;
+    // Kick off timer 2 waiting for a high to low transition
+    // We don't care about the absolute length of this, but if it
+    // runs more than 200 usec we have nobody talking
+    TIM2_CR1 = TIM_CR1_CKD_CK_INT | TIM_CR1_DIR_UP;
+    TIM2_CR2 = 0;
+    TIM2_SMCR = 0;
+    TIM2_DIER = TIM_DIER_UIE | TIM_DIER_CC1IE;
+    TIM2_CCER = 0;
+    TIM2_CCMR1 = TIM_CCMR1_CC1S_IN_TI1 | TIM_CCMR1_IC1F_CK_INT_N_4;
+    TIM2_CCMR2 = 0;
+    TIM2_CCER = TIM_CCER_CC1E | TIM_CCER_CC1P;
+    TIM2_CNT = 0;
+    TIM2_ARR = 200;
+    TIM2_SR = 0;
 
-  // Set up DMA to do 16 bit transfers, incrementing the memory address every time, interrupt on transfer complete, priority high
-  DMA1_CCR5 = DMA_CCR_PL_HIGH | DMA_CCR_MSIZE_16BIT | DMA_CCR_PSIZE_16BIT | DMA_CCR_MINC | DMA_CCR_TCIE;
-  // Maximum transfers 8 * 8 bits + start & stop, 2 values per bit
-  DMA1_CNDTR5 = MAX_RX;
-  // Use the DMAR register as source, thus doing burst mode DMA
-  DMA1_CPAR5 = (uint32_t)&TIM2_DMAR;
-  DMA1_CMAR5 = (uint32_t)&(bit_timings.receive_data[0]);
+    // Kick it off and wait for results
+    timer_enable_counter (TIM2);
+    mutex_lock    (&_adb_mutex);
 
-  // Kick it all off!
-  dma_enable_channel (DMA1, DMA_CHANNEL5);
-  timer_enable_counter (TIM2);
+    // Did we transition to low?
+    if (ADB_SM_RECV == _adb_sm_state) {
+      // Yes, carry on listening to the data
+      // At this point we should be at the start of a start bit.
+      // Use cc1 & cc2 to do pwm input, LO-HI on CC1 and HI-LO on CC2
+      // CC2 also triggers, and trigger sets off DMA
+      TIM2_CR1 = TIM_CR1_CKD_CK_INT | TIM_CR1_DIR_UP | TIM_CR1_URS;
+      TIM2_CR2 = 0;
+      TIM2_SMCR = 0;
+      TIM2_DIER = TIM_DIER_UIE | TIM_DIER_CC2IE;
+      TIM2_CCER = 0;
+      TIM2_CCMR1 = TIM_CCMR1_CC1S_IN_TI1 | TIM_CCMR1_IC1F_CK_INT_N_4 | TIM_CCMR1_CC2S_IN_TI1 | TIM_CCMR1_IC2F_CK_INT_N_4;
+      TIM2_CCMR2 = 0;
+      TIM2_CCER = TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC2P;
+      TIM2_CNT = 0;
+      TIM2_ARR = 200;
+      TIM2_SR = 0;
+
+      timings_cnt = 0;
+      timer_enable_counter (TIM2);
+
+      // Wait
+      mutex_lock          (&_adb_mutex);
+
+      // Now unpack the bits.
+      // Number of bytes received
+      *count = timings_cnt ? (timings_cnt - 1) >> 3 : 0;
+      for (uint8_t bytes = 0; bytes < *count; bytes++) {
+	uint8_t d = 0;
+	for (uint8_t bits = 0; bits < 8; bits++) {
+	  d = (d << 1) | (timings[(bytes * 8) + bits + 1] < 50 ? 1 : 0);
+	}
+	data[bytes] = d;
+      }
+    } else {
+      usleep (2000);
+      // No, we timed out.
+    } 
+  } else {
+    _adb_sm_state = ADB_SM_SRQ;
+  }
+  
+  mutex_unlock(&_adb_mutex);
+  _adb_sm_state = ADB_SM_IDLE;
 }
   
 
